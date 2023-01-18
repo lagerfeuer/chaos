@@ -84,7 +84,7 @@ void terminal_write(const char *data, size_t size) {
 void terminal_writestring(const char *data) {
   terminal_write(data, strlen(data));
 }
-void kernel_main(void) {
+void kmain(void) {
   /* Initialize terminal interface */
   terminal_initialize();
   /* Newline support is left as an exercise. */
