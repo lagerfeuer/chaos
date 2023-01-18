@@ -1,158 +1,110 @@
-    bits 16                         ; tell NASM this is 16 bit code
-    org 0x7c00                      ; tell NASM to start outputting stuff at offset 0x7c00
+/* SOURCE: https://wiki.osdev.org/Bare_Bones#Booting_the_Operating_System */
+/* Declare constants for the multiboot header. */
+.set ALIGN,    1<<0             /* align loaded modules on page boundaries */
+.set MEMINFO,  1<<1             /* provide memory map */
+.set FLAGS,    ALIGN | MEMINFO  /* this is the Multiboot 'flag' field */
+.set MAGIC,    0x1BADB002       /* 'magic number' lets bootloader find the header */
+.set CHECKSUM, -(MAGIC + FLAGS) /* checksum of above, to prove we are multiboot */
 
-    mov ax, 0                   ; load 0 into ax
-    mov ds, ax                  ; segment pointer
-    mov es, ax                  ; segment pointer
-    mov ss, ax                  ; segment pointer
-    mov sp, 0x7c00              ; stack pointer
+/* 
+Declare a multiboot header that marks the program as a kernel. These are magic
+values that are documented in the multiboot standard. The bootloader will
+search for this signature in the first 8 KiB of the kernel file, aligned at a
+32-bit boundary. The signature is in its own section so the header can be
+forced to be within the first 8 KiB of the kernel file.
+*/
+.section .multiboot
+.align 4
+.long MAGIC
+.long FLAGS
+.long CHECKSUM
 
-    mov si, welcome_msg
-    call print
+/*
+The multiboot standard does not define the value of the stack pointer register
+(esp) and it is up to the kernel to provide a stack. This allocates room for a
+small stack by creating a symbol at the bottom of it, then allocating 16384
+bytes for it, and finally creating a symbol at the top. The stack grows
+downwards on x86. The stack is in its own section so it can be marked nobits,
+which means the kernel file is smaller because it does not contain an
+uninitialized stack. The stack on x86 must be 16-byte aligned according to the
+System V ABI standard and de-facto extensions. The compiler will assume the
+stack is properly aligned and failure to align the stack will result in
+undefined behavior.
+*/
+.section .bss
+.align 16
+stack_bottom:
+.skip 16384 # 16 KiB
+stack_top:
 
-    ;; main
-main:
-    mov si, prompt
-    call print
+/*
+The linker script specifies _start as the entry point to the kernel and the
+bootloader will jump to this position once the kernel has been loaded. It
+doesn't make sense to return from this function as the bootloader is gone.
+*/
+.section .text
+.global _start
+.type _start, @function
+_start:
+	/*
+	The bootloader has loaded us into 32-bit protected mode on a x86
+	machine. Interrupts are disabled. Paging is disabled. The processor
+	state is as defined in the multiboot standard. The kernel has full
+	control of the CPU. The kernel can only make use of hardware features
+	and any code it provides as part of itself. There's no printf
+	function, unless the kernel provides its own <stdio.h> header and a
+	printf implementation. There are no security restrictions, no
+	safeguards, no debugging mechanisms, only what the kernel provides
+	itself. It has absolute and complete power over the
+	machine.
+	*/
 
-    mov di, buffer
-    call get_str
+	/*
+	To set up a stack, we set the esp register to point to the top of the
+	stack (as it grows downwards on x86 systems). This is necessarily done
+	in assembly as languages such as C cannot function without a stack.
+	*/
+	mov $stack_top, %esp
 
-    mov si, buffer
-    cmp byte [si], 0            ; blank line?
-    je main
+	/*
+	This is a good place to initialize crucial processor state before the
+	high-level kernel is entered. It's best to minimize the early
+	environment where crucial features are offline. Note that the
+	processor is not fully initialized yet: Features such as floating
+	point instructions and instruction set extensions are not initialized
+	yet. The GDT should be loaded here. Paging should be enabled here.
+	C++ features such as global constructors and exceptions will require
+	runtime support to work as well.
+	*/
 
-    mov si, buffer
-    mov di, cmd_info
-    call strcmp
-    jc .info
+	/*
+	Enter the high-level kernel. The ABI requires the stack is 16-byte
+	aligned at the time of the call instruction (which afterwards pushes
+	the return pointer of size 4 bytes). The stack was originally 16-byte
+	aligned above and we've pushed a multiple of 16 bytes to the
+	stack since (pushed 0 bytes so far), so the alignment has thus been
+	preserved and the call is well defined.
+	*/
+	call kernel_main
 
-    mov si, buffer
-    mov di, cmd_ping
-    call strcmp
-    jc .ping
+	/*
+	If the system has nothing more to do, put the computer into an
+	infinite loop. To do that:
+	1) Disable interrupts with cli (clear interrupt enable in eflags).
+	   They are already disabled by the bootloader, so this is not needed.
+	   Mind that you might later enable interrupts and return from
+	   kernel_main (which is sort of nonsensical to do).
+	2) Wait for the next interrupt to arrive with hlt (halt instruction).
+	   Since they are disabled, this will lock up the computer.
+	3) Jump to the hlt instruction if it ever wakes up due to a
+	   non-maskable interrupt occurring or due to system management mode.
+	*/
+	cli
+1:	hlt
+	jmp 1b
 
-    mov si, buffer
-    mov di, cmd_exit
-    call strcmp
-    jc .exit
-
-    jmp main
-
-.info:
-    mov si, info
-    call print
-    jmp main
-
-.ping:
-    mov si, pong
-    call print
-    jmp main
-
-.exit:
-    cli
-    hlt
-
-    ;; data
-welcome_msg db 'Welcome to ChaOS!', 0x0d, 0x0a, 0 ; 0x0d,0x0a are \r\n
-prompt db '> ', 0
-cmd_info db 'info', 0
-cmd_ping db 'ping', 0
-cmd_exit db 'exit', 0
-pong db 'pong', 0x0d, 0x0a, 0
-info db 'ChaOS v0.0.2', 0x0d, 0x0a, 0
-buffer times 64 db 0
-
-    ;; print
-print:
-    lodsb
-    or al, al
-    jz .done
-
-    mov ah, 0x0e
-    int 0x10
-
-    jmp print
-
-.done:
-    ret
-
-    ;; get_str
-get_str:
-    xor cl, cl
-.loop:
-    mov ah, 0
-    int 0x16
-
-    cmp al, 0x08                ; backspace?
-    je .backspace
-
-    cmp al, 0x0d                ; enter?
-    je .done
-
-    cmp cl, 0x3f                ; 63 chars in buffer?
-    je .loop
-
-    mov ah, 0x0e
-    int 0x10                    ; print char
-
-    stosb                       ; save char in buffer
-    inc cl
-    jmp .loop
-
-.backspace:
-    cmp cl, 0                   ; start of input?
-    je .loop                    ; ignore
-
-    dec di                      ; delete last char
-    mov byte [di], 0
-    dec cl                      ; decrement counter too
-
-    mov ah, 0x0e
-    mov al, 0x08
-    int 0x10                    ; backspace
-    mov al, ' '
-    int 0x10                    ; blank char
-    mov al, 0x08
-    int 0x10                    ; backspace
-
-    jmp .loop
-
-.done:
-    mov al, 0                   ; null terminator
-    stosb
-
-    mov ah, 0x0e
-    mov al, 0x0d
-    int 0x10
-    mov al, 0x0a
-    int 0x10                    ; newline
-
-    ret
-
-    ;; strcmp
-strcmp:
-.loop:
-   mov al, [si]
-   mov bl, [di]
-   cmp al, bl
-   jne .notequal
-
-   cmp al, 0
-   je .done
-
-   inc di
-   inc si
-   jmp .loop
-
-.notequal:
-   clc
-   ret
-
-.done:
-   stc
-   ret
-
-    ;; END
-    times 510 - ($-$$) db 0         ; pad remaining 510 bytes with zeroes
-    dw 0xaa55                       ; magic bootloader magic - marks this 512 byte sector bootable!
+/*
+Set the size of the _start symbol to the current location '.' minus its start.
+This is useful when debugging or when you implement call tracing.
+*/
+.size _start, . - _start
