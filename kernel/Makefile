@@ -18,6 +18,8 @@ CC_OBJ := $(patsubst %.c, $(OUT)/%.o, $(CC_SRC))
 CXX_SRC := $(shell find * -type f -name "*.cpp")
 CXX_OBJ := $(patsubst %.cpp, $(OUT)/%.o, $(CXX_SRC))
 
+guard=@mkdir -p $(@D)
+
 all: build
 
 build: $(TARGET)
@@ -32,12 +34,15 @@ $(BIN): $(ASM_OBJ) $(CC_OBJ) $(CXX_OBJ)
 	$(CC) -T linker.ld -o $@ -ffreestanding -O2 -nostdlib $^ -lgcc
 
 $(OUT)/%.o: %.s
+	$(guard)
 	$(ASM) $< -o $@
 
 $(OUT)/%.o: %.c
+	$(guard)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OUT)/%.o: %.cpp
+	$(guard)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

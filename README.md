@@ -15,6 +15,7 @@ Additionally, some packages are needed, here's a list for Arch Linux:
 ## Run the OS
 
 ```sh
-make
 make qemu
+# or
+make qemu-grub
 ```
