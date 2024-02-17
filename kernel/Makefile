@@ -24,9 +24,9 @@ all: build
 
 build: $(TARGET)
 
-$(TARGET): $(BIN)
+$(TARGET): $(BIN) ../grub.cfg
 	mkdir -p /tmp/isodir/boot/grub
-	cp $< /tmp/isodir/boot/$(basename BIN)
+	cp $< /tmp/isodir/boot/chaos.bin
 	cp ../grub.cfg /tmp/isodir/boot/grub/grub.cfg
 	grub-mkrescue -o $@ /tmp/isodir
 
