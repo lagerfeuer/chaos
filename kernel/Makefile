@@ -1,51 +1,86 @@
-export PATH := $(HOME)/opt/cross/bin:$(PATH)
-OUT := ../out
-TARGET := ../chaos.iso
-BIN := $(OUT)/chaos.bin
-$(shell mkdir -p $(OUT))
+HOST?=i686-elf
+HOSTARCH?=i386
 
-ASM := i686-elf-as
-CC := i686-elf-gcc
-CXX := i686-elf-g++
+ASM?=$(HOST)-as
+CC?=$(HOST)-gcc
+CXX?=$(HOST)-g++
 
-CFLAGS := -std=gnu99 -ffreestanding -O2 -Wall -Wextra
-CXXFLAGS := -ffreestanding -O2 -Wall -Wextra -fno-exceptions -fno-rtti
+CFLAGS?=-O2 -g
+CXXFLAGS?=
+LDFLAGS?=
+LIBS?=
 
-ASM_SRC := $(shell find * -type f -name "*.s")
-ASM_OBJ := $(patsubst %.s, $(OUT)/%.o, $(ASM_SRC))
-CC_SRC := $(shell find * -type f -name "*.c")
-CC_OBJ := $(patsubst %.c, $(OUT)/%.o, $(CC_SRC))
-CXX_SRC := $(shell find * -type f -name "*.cpp")
-CXX_OBJ := $(patsubst %.cpp, $(OUT)/%.o, $(CXX_SRC))
+DESTDIR?=
+PREFIX?=/usr/local
+EXEC_PREFIX?=$(PREFIX)
+BOOTDIR?=$(EXEC_PREFIX)/boot
+INCLUDEDIR?=$(PREFIX)/include
 
-guard=@mkdir -p $(@D)
+CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
+CXXFLAGS:=$(CXXFLAGS) -D__is_kernel -Iinclude
+LDFLAGS:=$(LDFLAGS)
+LIBS:=$(LIBS) -nostdlib -lk -lgcc
 
-all: build
+ARCHDIR=arch/$(HOSTARCH)
 
-build: $(TARGET)
+include $(ARCHDIR)/make.config
 
-$(TARGET): $(BIN) ../grub.cfg
-	mkdir -p /tmp/isodir/boot/grub
-	cp $< /tmp/isodir/boot/chaos.bin
-	cp ../grub.cfg /tmp/isodir/boot/grub/grub.cfg
-	grub-mkrescue -o $@ /tmp/isodir
+CFLAGS:=$(CFLAGS) $(KERNEL_ARCH_CFLAGS)
+CXXFLAGS:=$(CXXFLAGS) $(KERNEL_ARCH_CXXFLAGS)
+LDFLAGS:=$(LDFLAGS) $(KERNEL_ARCH_LDFLAGS)
+LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 
-$(BIN): $(ASM_OBJ) $(CC_OBJ) $(CXX_OBJ)
-	$(CC) -T linker.ld -o $@ -ffreestanding -O2 -nostdlib $^ -lgcc
+KERNEL_OBJS=\
+$(KERNEL_ARCH_OBJS) \
+kernel/kernel.o \
 
-$(OUT)/%.o: %.s
-	$(guard)
-	$(ASM) $< -o $@
+OBJS=\
+$(ARCHDIR)/crti.o \
+$(ARCHDIR)/crtbegin.o \
+$(KERNEL_OBJS) \
+$(ARCHDIR)/crtend.o \
+$(ARCHDIR)/crtn.o \
 
-$(OUT)/%.o: %.c
-	$(guard)
-	$(CC) $(CFLAGS) -c $< -o $@
+LINK_LIST=\
+$(LDFLAGS) \
+$(ARCHDIR)/crti.o \
+$(ARCHDIR)/crtbegin.o \
+$(KERNEL_OBJS) \
+$(LIBS) \
+$(ARCHDIR)/crtend.o \
+$(ARCHDIR)/crtn.o \
 
-$(OUT)/%.o: %.cpp
-	$(guard)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+.PHONY: all test clean install install-headers install-kernel
+.SUFFIXES: .o .c .S
+
+all: chaos.kernel
+
+chaos.kernel: $(OBJS) $(ARCHDIR)/linker.ld
+	$(CC) -T $(ARCHDIR)/linker.ld -o $@ $(CFLAGS) $(LINK_LIST)
+	grub-file --is-x86-multiboot chaos.kernel
+
+$(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
+	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
+
+.c.o:
+	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CXXFLAGS)
+
+.S.o:
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CXXFLAGS)
 
 clean:
-	rm -rf $(OUT) $(TARGET)
+	rm -f chaos.kernel
+	rm -f $(OBJS) *.o */*.o */*/*.o
+	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d
 
-.PHONY: build clean
+install: install-headers install-kernel
+
+install-headers:
+	mkdir -p $(DESTDIR)$(INCLUDEDIR)
+	cp -R --preserve=timestamps include/. $(DESTDIR)$(INCLUDEDIR)/.
+
+install-kernel: chaos.kernel
+	mkdir -p $(DESTDIR)$(BOOTDIR)
+	cp chaos.kernel $(DESTDIR)$(BOOTDIR)
+
+-include $(OBJS:.o=.d)
